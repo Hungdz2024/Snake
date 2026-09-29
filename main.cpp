@@ -1,623 +1,571 @@
-#include <iostream>
+#ifndef UNICODE
+#define UNICODE
+#endif
+
 #include <windows.h>
-#include <conio.h>
-#include <fstream>
 #include <string>
 #include <vector>
 #include <ctime>
 #include <algorithm>
-#include <limits>
+#include <fstream>
+#include <sstream>
 
 using namespace std;
 
+// Hàm chuyển số nguyên sang wstring tương thích mọi bản MinGW
+wstring intToWString(int val) {
+    wstringstream wss;
+    wss << val;
+    return wss.str();
+}
+
 // ==========================================
-// CẤU HÌNH VÀ HẰNG SỐ CỦA GAME
+// CẤU HÌNH VÀ THÔNG SỐ GAME
 // ==========================================
-const int BOARD_WIDTH = 50;       // Chiều rộng khung sân chơi
-const int BOARD_HEIGHT = 22;      // Chiều cao khung sân chơi
-const int OFFSET_X = 5;           // Lề trái console
-const int OFFSET_Y = 2;           // Lề trên console
-const int MAX_SNAKE_LEN = 1000;   // Chiều dài tối đa của rắn
+const int CELL_SIZE = 24;          // Kích thước 1 ô cờ (pixel)
+const int GRID_WIDTH = 25;         // Số cột
+const int GRID_HEIGHT = 20;        // Số hàng
+const int SIDEBAR_WIDTH = 220;     // Chiều rộng bảng thông tin bên phải
+const int WINDOW_WIDTH = (GRID_WIDTH * CELL_SIZE) + SIDEBAR_WIDTH + 16;
+const int WINDOW_HEIGHT = (GRID_HEIGHT * CELL_SIZE) + 39;
+
+const int TIMER_ID = 1;
 const string RECORD_FILE = "highscores.txt";
 
-// Bảng mã màu console chuẩn Windows (SetConsoleTextAttribute)
-enum ConsoleColor {
-    COLOR_BLACK = 0,
-    COLOR_BLUE = 1,
-    COLOR_GREEN = 2,
-    COLOR_CYAN = 3,
-    COLOR_RED = 4,
-    COLOR_MAGENTA = 5,
-    COLOR_BROWN = 6,
-    COLOR_LIGHTGRAY = 7,
-    COLOR_DARKGRAY = 8,
-    COLOR_LIGHTBLUE = 9,
-    COLOR_LIGHTGREEN = 10,
-    COLOR_LIGHTCYAN = 11,
-    COLOR_LIGHTRED = 12,
-    COLOR_LIGHTMAGENTA = 13,
-    COLOR_YELLOW = 14,
-    COLOR_WHITE = 15
+// Các trạng thái của game
+enum GameState {
+    STATE_MENU,
+    STATE_PLAYING,
+    STATE_PAUSED,
+    STATE_GAMEOVER
 };
 
-// Hướng di chuyển của rắn
+// Hướng di chuyển
 enum Direction {
-    DIR_UP = 0,
-    DIR_DOWN = 1,
-    DIR_LEFT = 2,
-    DIR_RIGHT = 3
+    DIR_UP,
+    DIR_DOWN,
+    DIR_LEFT,
+    DIR_RIGHT
 };
 
-// Cấu trúc lưu kỷ lục điểm số
-struct HighScore {
-    string playerName;
-    int score;
+struct Point {
+    int x;
+    int y;
 };
 
 // ==========================================
-// CÁC HÀM TIỆN ÍCH CONSOLE (WINDOWS API)
+// BIẾN TOÀN CỤC CỦA TRÒ CHƠI
 // ==========================================
+GameState g_state = STATE_MENU;
+bool g_passWallMode = false;
+Direction g_dir = DIR_RIGHT;
+Direction g_nextDir = DIR_RIGHT;
 
-// Đặt vị trí con trỏ màn hình không gây nhấp nháy
-void goToXY(int x, int y) {
-    COORD coord;
-    coord.X = (SHORT)x;
-    coord.Y = (SHORT)y;
-    SetConsoleCursorPosition(GetStdHandle(STD_OUTPUT_HANDLE), coord);
-}
+vector<Point> g_snake;
+Point g_food;
+Point g_specialFood;
+bool g_hasSpecialFood = false;
+int g_specialTimer = 0;
 
-// Ẩn/Hiện con trỏ nhấp nháy trên console
-void setCursorVisible(bool visible) {
-    HANDLE consoleHandle = GetStdHandle(STD_OUTPUT_HANDLE);
-    CONSOLE_CURSOR_INFO info;
-    info.dwSize = 100;
-    info.bVisible = visible ? TRUE : FALSE;
-    SetConsoleCursorInfo(consoleHandle, &info);
-}
-
-// Đổi màu chữ và màu nền hiển thị
-void setColor(int textColor, int bgColor = COLOR_BLACK) {
-    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), (WORD)((bgColor << 4) | textColor));
-}
+int g_score = 0;
+int g_highScore = 0;
+int g_speedMs = 120;
 
 // ==========================================
-// QUẢN LÝ TỆP TIN VÀ BẢNG XẾP HẠNG
+// QUẢN LÝ ĐIỂM SỐ KỶ LỤC
 // ==========================================
-
-// Đọc danh sách điểm kỷ lục từ file
-vector<HighScore> loadHighScores() {
-    vector<HighScore> list;
+void loadHighScore() {
     ifstream fin(RECORD_FILE);
-    if (!fin.is_open()) return list;
-
-    HighScore item;
-    while (fin >> item.playerName >> item.score) {
-        list.push_back(item);
+    if (fin.is_open()) {
+        fin >> g_highScore;
+        fin.close();
     }
-    fin.close();
-
-    sort(list.begin(), list.end(), [](const HighScore &a, const HighScore &b) {
-        return a.score > b.score;
-    });
-    return list;
 }
 
-// Lưu điểm số mới vào file kỷ lục (lấy Top 5)
-void saveHighScore(const string &name, int score) {
-    vector<HighScore> list = loadHighScores();
-    list.push_back({name, score});
-    sort(list.begin(), list.end(), [](const HighScore &a, const HighScore &b) {
-        return a.score > b.score;
-    });
-
-    if (list.size() > 5) {
-        list.resize(5);
-    }
-
-    ofstream fout(RECORD_FILE);
-    if (fout.is_open()) {
-        for (const auto &item : list) {
-            fout << item.playerName << " " << item.score << "\n";
+void saveHighScore() {
+    if (g_score > g_highScore) {
+        g_highScore = g_score;
+        ofstream fout(RECORD_FILE);
+        if (fout.is_open()) {
+            fout << g_highScore;
+            fout.close();
         }
-        fout.close();
     }
 }
 
 // ==========================================
-// HÀM VẼ GIAO DIỆN & KHUNG CHƠI
+// CƠ CHẾ SINH MỒI
 // ==========================================
-
-// Vẽ khung viền sân chơi
-void drawGameBoard() {
-    setColor(COLOR_CYAN);
-    // Khung viền trên
-    goToXY(OFFSET_X, OFFSET_Y);
-    cout << "+";
-    for (int i = 0; i < BOARD_WIDTH; ++i) cout << "-";
-    cout << "+";
-
-    // Khung viền hai bên
-    for (int y = 0; y < BOARD_HEIGHT; ++y) {
-        goToXY(OFFSET_X, OFFSET_Y + 1 + y);
-        cout << "|";
-        goToXY(OFFSET_X + BOARD_WIDTH + 1, OFFSET_Y + 1 + y);
-        cout << "|";
-    }
-
-    // Khung viền dưới
-    goToXY(OFFSET_X, OFFSET_Y + BOARD_HEIGHT + 1);
-    cout << "+";
-    for (int i = 0; i < BOARD_WIDTH; ++i) cout << "-";
-    cout << "+";
-    setColor(COLOR_WHITE);
-}
-
-// Vẽ bảng thông số trận đấu bên cánh phải
-void drawGameInfo(int score, int speedMs, bool passWallMode, bool hasSpecialFood, int specialFoodTimer) {
-    int infoX = OFFSET_X + BOARD_WIDTH + 5;
-    int infoY = OFFSET_Y;
-
-    setColor(COLOR_YELLOW);
-    goToXY(infoX, infoY);     cout << "=============================";
-    goToXY(infoX, infoY + 1); cout << "       THONG TIN MAN CHOI    ";
-    goToXY(infoX, infoY + 2); cout << "=============================";
-
-    setColor(COLOR_WHITE);
-    goToXY(infoX, infoY + 4); cout << "Diem hien tai : ";
-    setColor(COLOR_LIGHTGREEN);
-    cout << score << "   ";
-
-    setColor(COLOR_WHITE);
-    goToXY(infoX, infoY + 5); cout << "Toc do delay  : ";
-    setColor(COLOR_LIGHTCYAN);
-    cout << speedMs << " ms  ";
-
-    setColor(COLOR_WHITE);
-    goToXY(infoX, infoY + 6); cout << "Che do tuong  : ";
-    if (passWallMode) {
-        setColor(COLOR_LIGHTGREEN);
-        cout << "[XUYEN TUONG]       ";
-    } else {
-        setColor(COLOR_LIGHTRED);
-        cout << "[DAP TUONG LA CHET] ";
-    }
-
-    setColor(COLOR_WHITE);
-    goToXY(infoX, infoY + 8); cout << "Moi dac biet  : ";
-    if (hasSpecialFood) {
-        setColor(COLOR_LIGHTMAGENTA);
-        cout << "Dang xuat hien (" << specialFoodTimer << "s) ";
-    } else {
-        setColor(COLOR_DARKGRAY);
-        cout << "Khong co             ";
-    }
-
-    setColor(COLOR_BROWN);
-    goToXY(infoX, infoY + 11); cout << "-----------------------------";
-    goToXY(infoX, infoY + 12); cout << "Dieu khien: W/A/S/D hoac Mui ten";
-    goToXY(infoX, infoY + 13); cout << "Phim P    : Tam dung tro choi";
-    goToXY(infoX, infoY + 14); cout << "Phim X    : Thoat ve menu chinh";
-    goToXY(infoX, infoY + 15); cout << "-----------------------------";
-    setColor(COLOR_WHITE);
-}
-
-// ==========================================
-// HÀM SINH TOẠ ĐỘ VÀ QUẢN LÝ MỒI
-// ==========================================
-
-// Sinh mồi thường không bị trùng vào bất kỳ đốt thân rắn nào
-void spawnNormalFood(int snakeX[], int snakeY[], int snakeLen, int &foodX, int &foodY) {
+void spawnNormalFood() {
     bool onSnake;
     do {
         onSnake = false;
-        foodX = rand() % BOARD_WIDTH;
-        foodY = rand() % BOARD_HEIGHT;
-        for (int i = 0; i < snakeLen; ++i) {
-            if (snakeX[i] == foodX && snakeY[i] == foodY) {
+        g_food.x = rand() % GRID_WIDTH;
+        g_food.y = rand() % GRID_HEIGHT;
+        for (size_t i = 0; i < g_snake.size(); ++i) {
+            if (g_snake[i].x == g_food.x && g_snake[i].y == g_food.y) {
                 onSnake = true;
                 break;
             }
         }
     } while (onSnake);
-
-    goToXY(OFFSET_X + 1 + foodX, OFFSET_Y + 1 + foodY);
-    setColor(COLOR_LIGHTRED);
-    cout << "O";
-    setColor(COLOR_WHITE);
 }
 
-// Sinh mồi đặc biệt (cộng nhiều điểm hơn, có thời hạn)
-void spawnSpecialFood(int snakeX[], int snakeY[], int snakeLen, int foodX, int foodY, int &specX, int &specY) {
+void spawnSpecialFood() {
     bool invalid;
     do {
         invalid = false;
-        specX = rand() % BOARD_WIDTH;
-        specY = rand() % BOARD_HEIGHT;
-        if (specX == foodX && specY == foodY) invalid = true;
-        for (int i = 0; i < snakeLen; ++i) {
-            if (snakeX[i] == specX && snakeY[i] == specY) {
+        g_specialFood.x = rand() % GRID_WIDTH;
+        g_specialFood.y = rand() % GRID_HEIGHT;
+        if (g_specialFood.x == g_food.x && g_specialFood.y == g_food.y) invalid = true;
+        for (size_t i = 0; i < g_snake.size(); ++i) {
+            if (g_snake[i].x == g_specialFood.x && g_snake[i].y == g_specialFood.y) {
                 invalid = true;
                 break;
             }
         }
     } while (invalid);
 
-    goToXY(OFFSET_X + 1 + specX, OFFSET_Y + 1 + specY);
-    setColor(COLOR_YELLOW);
-    cout << "$";
-    setColor(COLOR_WHITE);
-}
-
-// Xoá mồi đặc biệt khi hết thời gian tồn tại
-void clearSpecialFood(int specX, int specY) {
-    goToXY(OFFSET_X + 1 + specX, OFFSET_Y + 1 + specY);
-    cout << " ";
+    g_hasSpecialFood = true;
+    g_specialTimer = 50; // Khoảng 5-6 giây
 }
 
 // ==========================================
-// GAME LOOP VÀ LOGIC CHÍNH
+// KHỞI TẠO VÁN CHƠI MỚI
 // ==========================================
+void initGame(bool passWall) {
+    g_passWallMode = passWall;
+    g_snake.clear();
 
-// Xử lý một màn chơi cụ thể
-void playGameSession(bool passWallMode) {
-    system("cls");
-    setCursorVisible(false);
+    int startX = GRID_WIDTH / 2;
+    int startY = GRID_HEIGHT / 2;
+    Point p1 = {startX, startY};
+    Point p2 = {startX - 1, startY};
+    Point p3 = {startX - 2, startY};
+    g_snake.push_back(p1);
+    g_snake.push_back(p2);
+    g_snake.push_back(p3);
 
-    // Mảng toạ độ thân rắn (đáp ứng tiêu chí lưu bằng x[], y[])
-    int snakeX[MAX_SNAKE_LEN];
-    int snakeY[MAX_SNAKE_LEN];
-    int snakeLen = 3;
+    g_dir = DIR_RIGHT;
+    g_nextDir = DIR_RIGHT;
+    g_score = 0;
+    g_speedMs = 120;
+    g_hasSpecialFood = false;
 
-    // Vị trí khởi tạo ban đầu giữa bàn cờ
-    snakeX[0] = BOARD_WIDTH / 2;
-    snakeY[0] = BOARD_HEIGHT / 2;
-    snakeX[1] = snakeX[0] - 1;
-    snakeY[1] = snakeY[0];
-    snakeX[2] = snakeX[0] - 2;
-    snakeY[2] = snakeY[0];
-
-    Direction dir = DIR_RIGHT;
-    int score = 0;
-    int speedMs = 120; // Độ trễ ban đầu (ms)
-
-    // Khởi tạo trạng thái mồi
-    int foodX = 0, foodY = 0;
-    int specX = -1, specY = -1;
-    bool hasSpecialFood = false;
-    int specialFoodTimer = 0;
-    clock_t lastSpecCheck = clock();
-
-    drawGameBoard();
-    spawnNormalFood(snakeX, snakeY, snakeLen, foodX, foodY);
-
-    // Vẽ thân rắn ban đầu
-    for (int i = 0; i < snakeLen; ++i) {
-        goToXY(OFFSET_X + 1 + snakeX[i], OFFSET_Y + 1 + snakeY[i]);
-        if (i == 0) {
-            setColor(COLOR_LIGHTGREEN);
-            cout << "@";
-        } else {
-            setColor(COLOR_GREEN);
-            cout << "#";
-        }
-    }
-    setColor(COLOR_WHITE);
-
-    drawGameInfo(score, speedMs, passWallMode, hasSpecialFood, specialFoodTimer);
-
-    bool isGameOver = false;
-
-    // Vòng lặp thời gian thực
-    while (!isGameOver) {
-        // Đọc phím không chặn (Non-blocking I/O)
-        if (_kbhit()) {
-            int key = _getch();
-            if (key == 224) { // Nhóm phím mũi tên
-                key = _getch();
-                if (key == 72 && dir != DIR_DOWN) dir = DIR_UP;        // Mũi tên lên
-                else if (key == 80 && dir != DIR_UP) dir = DIR_DOWN;   // Mũi tên xuống
-                else if (key == 75 && dir != DIR_RIGHT) dir = DIR_LEFT;// Mũi tên trái
-                else if (key == 77 && dir != DIR_LEFT) dir = DIR_RIGHT;// Mũi tên phải
-            } else {
-                char ch = (char)tolower(key);
-                if (ch == 'w' && dir != DIR_DOWN) dir = DIR_UP;
-                else if (ch == 's' && dir != DIR_UP) dir = DIR_DOWN;
-                else if (ch == 'a' && dir != DIR_RIGHT) dir = DIR_LEFT;
-                else if (ch == 'd' && dir != DIR_LEFT) dir = DIR_RIGHT;
-                else if (ch == 'p') {
-                    // Tạm dừng trò chơi
-                    goToXY(OFFSET_X + BOARD_WIDTH / 2 - 8, OFFSET_Y + BOARD_HEIGHT / 2);
-                    setColor(COLOR_YELLOW, COLOR_BLUE);
-                    cout << "  TAM DUNG (Nhan P de tiep tuc)  ";
-                    setColor(COLOR_WHITE, COLOR_BLACK);
-                    while (true) {
-                        if (_kbhit()) {
-                            int resumeKey = _getch();
-                            if (tolower(resumeKey) == 'p') {
-                                goToXY(OFFSET_X + BOARD_WIDTH / 2 - 8, OFFSET_Y + BOARD_HEIGHT / 2);
-                                for (int i = 0; i < 33; ++i) cout << " ";
-                                break;
-                            }
-                        }
-                        Sleep(50);
-                    }
-                } else if (ch == 'x') {
-                    // Phím thoát khẩn cấp về menu
-                    isGameOver = true;
-                    break;
-                }
-            }
-        }
-
-        // Đồng hồ đếm ngược và sinh mồi đặc biệt
-        clock_t now = clock();
-        if (double(now - lastSpecCheck) / CLOCKS_PER_SEC >= 1.0) {
-            lastSpecCheck = now;
-            if (hasSpecialFood) {
-                specialFoodTimer--;
-                if (specialFoodTimer <= 0) {
-                    hasSpecialFood = false;
-                    clearSpecialFood(specX, specY);
-                }
-                drawGameInfo(score, speedMs, passWallMode, hasSpecialFood, specialFoodTimer);
-            } else {
-                // Tỉ lệ 10% mỗi giây sẽ sinh mồi đặc biệt
-                if (rand() % 10 == 0) {
-                    hasSpecialFood = true;
-                    specialFoodTimer = 8; // Tồn tại 8 giây
-                    spawnSpecialFood(snakeX, snakeY, snakeLen, foodX, foodY, specX, specY);
-                    drawGameInfo(score, speedMs, passWallMode, hasSpecialFood, specialFoodTimer);
-                }
-            }
-        }
-
-        // Tính toạ độ mới cho đầu rắn
-        int nextX = snakeX[0];
-        int nextY = snakeY[0];
-        switch (dir) {
-            case DIR_UP:    nextY--; break;
-            case DIR_DOWN:  nextY++; break;
-            case DIR_LEFT:  nextX--; break;
-            case DIR_RIGHT: nextX++; break;
-        }
-
-        // Kiểm tra va chạm biên tường
-        if (passWallMode) {
-            // Chế độ xuyên tường: vòng sang mép đối diện
-            if (nextX < 0) nextX = BOARD_WIDTH - 1;
-            else if (nextX >= BOARD_WIDTH) nextX = 0;
-            if (nextY < 0) nextY = BOARD_HEIGHT - 1;
-            else if (nextY >= BOARD_HEIGHT) nextY = 0;
-        } else {
-            // Chế độ cổ điển: đâm tường là thua
-            if (nextX < 0 || nextX >= BOARD_WIDTH || nextY < 0 || nextY >= BOARD_HEIGHT) {
-                isGameOver = true;
-                break;
-            }
-        }
-
-        // Kiểm tra cắn vào thân rắn
-        for (int i = 0; i < snakeLen - 1; ++i) {
-            if (nextX == snakeX[i] && nextY == snakeY[i]) {
-                isGameOver = true;
-                break;
-            }
-        }
-        if (isGameOver) break;
-
-        // Kiểm tra ăn mồi
-        bool eatNormal = (nextX == foodX && nextY == foodY);
-        bool eatSpecial = (hasSpecialFood && nextX == specX && nextY == specY);
-
-        if (eatNormal || eatSpecial) {
-            if (eatNormal) {
-                score += 10;
-                if (snakeLen < MAX_SNAKE_LEN) snakeLen++;
-                spawnNormalFood(snakeX, snakeY, snakeLen, foodX, foodY);
-            }
-            if (eatSpecial) {
-                score += 30;
-                hasSpecialFood = false;
-                specialFoodTimer = 0;
-            }
-
-            // Tăng tốc độ game: giảm thời gian Sleep
-            if (speedMs > 35) {
-                speedMs -= 3;
-            }
-            drawGameInfo(score, speedMs, passWallMode, hasSpecialFood, specialFoodTimer);
-        } else {
-            // Xoá đốt đuôi cũ (kỹ thuật cập nhật điểm ảnh cục bộ, chống nhấp nháy 100%)
-            goToXY(OFFSET_X + 1 + snakeX[snakeLen - 1], OFFSET_Y + 1 + snakeY[snakeLen - 1]);
-            cout << " ";
-        }
-
-        // Dịch chuyển các khúc thân rắn
-        for (int i = snakeLen - 1; i > 0; --i) {
-            snakeX[i] = snakeX[i - 1];
-            snakeY[i] = snakeY[i - 1];
-        }
-        snakeX[0] = nextX;
-        snakeY[0] = nextY;
-
-        // Vẽ lại khúc cổ rắn
-        if (snakeLen > 1) {
-            goToXY(OFFSET_X + 1 + snakeX[1], OFFSET_Y + 1 + snakeY[1]);
-            setColor(COLOR_GREEN);
-            cout << "#";
-        }
-
-        // Vẽ đầu rắn mới
-        goToXY(OFFSET_X + 1 + snakeX[0], OFFSET_Y + 1 + snakeY[0]);
-        setColor(COLOR_LIGHTGREEN);
-        cout << "@";
-        setColor(COLOR_WHITE);
-
-        Sleep(speedMs);
-    }
-
-    // Kết thúc màn chơi
-    setCursorVisible(true);
-    goToXY(OFFSET_X + BOARD_WIDTH / 2 - 7, OFFSET_Y + BOARD_HEIGHT / 2 - 1);
-    setColor(COLOR_LIGHTRED, COLOR_BLACK);
-    cout << "=== GAME OVER ===";
-
-    goToXY(OFFSET_X + BOARD_WIDTH / 2 - 10, OFFSET_Y + BOARD_HEIGHT / 2 + 1);
-    setColor(COLOR_YELLOW);
-    cout << "Diem dat duoc: " << score;
-
-    setColor(COLOR_WHITE);
-    goToXY(OFFSET_X + 2, OFFSET_Y + BOARD_HEIGHT + 3);
-    cout << "Nhap ten cua ban (viet lien khong dau): ";
-    string name;
-    cin >> name;
-    if (!name.empty()) {
-        saveHighScore(name, score);
-    }
-
-    goToXY(OFFSET_X + 2, OFFSET_Y + BOARD_HEIGHT + 5);
-    cout << "Nhan phim bat ky de quay lai menu chinh...";
-    _getch();
+    spawnNormalFood();
+    g_state = STATE_PLAYING;
 }
 
 // ==========================================
-// CÁC MÀN HÌNH CHỨC NĂNG PHỤ
+// CẬP NHẬT LOGIC GAME MỖI FRAME
 // ==========================================
+void updateGame(HWND hwnd) {
+    if (g_state != STATE_PLAYING) return;
 
-// Hiển thị bảng xếp hạng điểm cao từ file
-void showHighScoresScreen() {
-    system("cls");
-    setColor(COLOR_YELLOW);
-    cout << "=====================================================\n";
-    cout << "             BANG XEP HANG DIEM CAO                  \n";
-    cout << "=====================================================\n";
-    setColor(COLOR_WHITE);
+    g_dir = g_nextDir;
 
-    vector<HighScore> list = loadHighScores();
-    if (list.empty()) {
-        cout << "  (Chua co du lieu ky luc nao duoc ghi nhan)\n";
+    // Giảm thời gian mồi đặc biệt
+    if (g_hasSpecialFood) {
+        g_specialTimer--;
+        if (g_specialTimer <= 0) {
+            g_hasSpecialFood = false;
+        }
     } else {
-        cout << "  Top   Nguoi choi                 Diem so\n";
-        cout << "  -----------------------------------------\n";
-        for (size_t i = 0; i < list.size(); ++i) {
-            setColor(i == 0 ? COLOR_LIGHTRED : COLOR_LIGHTCYAN);
-            printf("  #%-4d %-25s %d\n", (int)(i + 1), list[i].playerName.c_str(), list[i].score);
+        if (rand() % 80 == 0) {
+            spawnSpecialFood();
         }
     }
 
-    setColor(COLOR_BROWN);
-    cout << "\n=====================================================\n";
-    cout << "Nhan phim bat ky de quay lai menu chinh...";
-    setColor(COLOR_WHITE);
-    _getch();
+    // Tính toạ độ mới cho đầu rắn
+    Point head = g_snake.front();
+    switch (g_dir) {
+        case DIR_UP:    head.y--; break;
+        case DIR_DOWN:  head.y++; break;
+        case DIR_LEFT:  head.x--; break;
+        case DIR_RIGHT: head.x++; break;
+    }
+
+    // Xử lý va chạm biên tường
+    if (g_passWallMode) {
+        if (head.x < 0) head.x = GRID_WIDTH - 1;
+        else if (head.x >= GRID_WIDTH) head.x = 0;
+        if (head.y < 0) head.y = GRID_HEIGHT - 1;
+        else if (head.y >= GRID_HEIGHT) head.y = 0;
+    } else {
+        if (head.x < 0 || head.x >= GRID_WIDTH || head.y < 0 || head.y >= GRID_HEIGHT) {
+            saveHighScore();
+            g_state = STATE_GAMEOVER;
+            InvalidateRect(hwnd, NULL, FALSE);
+            return;
+        }
+    }
+
+    // Kiểm tra cắn vào thân rắn
+    for (size_t i = 0; i < g_snake.size() - 1; ++i) {
+        if (head.x == g_snake[i].x && head.y == g_snake[i].y) {
+            saveHighScore();
+            g_state = STATE_GAMEOVER;
+            InvalidateRect(hwnd, NULL, FALSE);
+            return;
+        }
+    }
+
+    // Kiểm tra ăn mồi
+    bool ateNormal = (head.x == g_food.x && head.y == g_food.y);
+    bool ateSpecial = (g_hasSpecialFood && head.x == g_specialFood.x && head.y == g_specialFood.y);
+
+    g_snake.insert(g_snake.begin(), head);
+
+    if (ateNormal) {
+        g_score += 10;
+        spawnNormalFood();
+        if (g_speedMs > 45) {
+            g_speedMs -= 3;
+            SetTimer(hwnd, TIMER_ID, g_speedMs, NULL);
+        }
+    } else if (ateSpecial) {
+        g_score += 30;
+        g_hasSpecialFood = false;
+    } else {
+        g_snake.pop_back();
+    }
+
+    InvalidateRect(hwnd, NULL, FALSE);
 }
 
-// Hiển thị hướng dẫn luật chơi
-void showInstructionsScreen() {
-    system("cls");
-    setColor(COLOR_LIGHTCYAN);
-    cout << "=====================================================\n";
-    cout << "              HUONG DAN LUAT CHOI RAN SAN MOI        \n";
-    cout << "=====================================================\n";
-    setColor(COLOR_WHITE);
-    cout << " 1. Dieu khien con ran:\n";
-    cout << "    - Phim W hoac Mui ten Len   : Di chuyen LEN\n";
-    cout << "    - Phim S hoac Mui ten Xuong : Di chuyen XUONG\n";
-    cout << "    - Phim A hoac Mui ten Trai  : Di chuyen SANG TRAI\n";
-    cout << "    - Phim D hoac Mui ten Phai  : Di chuyen SANG PHAI\n";
-    cout << "    * Quy tac: Ran khong the quay nguoc 180 do.\n\n";
+// ==========================================
+// VẼ GIAO DIỆN GUI BẰNG GDI (CHỐNG GIẬT LAG)
+// ==========================================
+void render(HWND hwnd, HDC hdc) {
+    RECT clientRect;
+    GetClientRect(hwnd, &clientRect);
+    int width = clientRect.right;
+    int height = clientRect.bottom;
 
-    cout << " 2. He thong thuc an:\n";
-    cout << "    - Moi thuong ('O')  : +10 diem, ran dai them 1 dot.\n";
-    cout << "    - Moi dac biet ('$'): +30 diem, bien mat sau vai giay!\n\n";
+    // Kỹ thuật Double Buffering
+    HDC memDC = CreateCompatibleDC(hdc);
+    HBITMAP memBitmap = CreateCompatibleBitmap(hdc, width, height);
+    HBITMAP oldBitmap = (HBITMAP)SelectObject(memDC, memBitmap);
 
-    cout << " 3. Che do va Quy tac thua:\n";
-    cout << "    - Dam vao than ran: Thua cuoc.\n";
-    cout << "    - Che do Co dien: Dam vao tuong bien la thua.\n";
-    cout << "    - Che do Xuyen tuong: Ran di xuyen qua mep doi dien.\n";
-    cout << "    - Phim P: Tam dung game khi can.\n";
+    // 1. Tô nền bàn cờ
+    HBRUSH bgBrush = CreateSolidBrush(RGB(22, 27, 34));
+    FillRect(memDC, &clientRect, bgBrush);
+    DeleteObject(bgBrush);
 
-    setColor(COLOR_BROWN);
-    cout << "=====================================================\n";
-    cout << "Nhan phim bat ky de quay lai menu chinh...";
-    setColor(COLOR_WHITE);
-    _getch();
-}
+    int playAreaWidth = GRID_WIDTH * CELL_SIZE;
+    int playAreaHeight = GRID_HEIGHT * CELL_SIZE;
 
-// Hàm kiểm tra hợp lệ dữ liệu nhập (chống crash khi nhập chuỗi ký tự)
-int getValidMenuChoice(int minVal, int maxVal) {
-    int choice;
-    while (true) {
-        cout << ">> Lua chon cua ban [" << minVal << " - " << maxVal << "]: ";
-        if (cin >> choice) {
-            if (choice >= minVal && choice <= maxVal) {
-                return choice;
-            }
-            setColor(COLOR_LIGHTRED);
-            cout << "Loi: Gia tri nam ngoai khoang cho phep. Vui long chon lai!\n";
-            setColor(COLOR_WHITE);
+    // 2. Vẽ lưới ô cờ nhẹ
+    HPEN gridPen = CreatePen(PS_SOLID, 1, RGB(30, 36, 46));
+    HPEN oldPen = (HPEN)SelectObject(memDC, gridPen);
+    for (int x = 0; x <= GRID_WIDTH; ++x) {
+        MoveToEx(memDC, x * CELL_SIZE, 0, NULL);
+        LineTo(memDC, x * CELL_SIZE, playAreaHeight);
+    }
+    for (int y = 0; y <= GRID_HEIGHT; ++y) {
+        MoveToEx(memDC, 0, y * CELL_SIZE, NULL);
+        LineTo(memDC, playAreaWidth, y * CELL_SIZE);
+    }
+    SelectObject(memDC, oldPen);
+    DeleteObject(gridPen);
+
+    // 3. Đường viền ngăn cách sân chơi và Sidebar
+    HPEN borderPen = CreatePen(PS_SOLID, 2, RGB(48, 54, 61));
+    SelectObject(memDC, borderPen);
+    MoveToEx(memDC, playAreaWidth, 0, NULL);
+    LineTo(memDC, playAreaWidth, playAreaHeight);
+    SelectObject(memDC, oldPen);
+    DeleteObject(borderPen);
+
+    // 4. Vẽ mồi thường
+    HBRUSH foodBrush = CreateSolidBrush(RGB(248, 81, 73));
+    HBRUSH oldBrush = (HBRUSH)SelectObject(memDC, foodBrush);
+    Ellipse(memDC, g_food.x * CELL_SIZE + 2, g_food.y * CELL_SIZE + 2, 
+            (g_food.x + 1) * CELL_SIZE - 2, (g_food.y + 1) * CELL_SIZE - 2);
+    DeleteObject(foodBrush);
+
+    // 5. Vẽ mồi đặc biệt
+    if (g_hasSpecialFood) {
+        HBRUSH specBrush = CreateSolidBrush(RGB(240, 198, 60));
+        SelectObject(memDC, specBrush);
+        Ellipse(memDC, g_specialFood.x * CELL_SIZE + 1, g_specialFood.y * CELL_SIZE + 1,
+                (g_specialFood.x + 1) * CELL_SIZE - 1, (g_specialFood.y + 1) * CELL_SIZE - 1);
+        DeleteObject(specBrush);
+    }
+
+    // 6. Vẽ thân và đầu rắn
+    HBRUSH bodyBrush = CreateSolidBrush(RGB(46, 160, 67));
+    HBRUSH headBrush = CreateSolidBrush(RGB(86, 211, 100));
+
+    for (size_t i = 0; i < g_snake.size(); ++i) {
+        int x1 = g_snake[i].x * CELL_SIZE + 1;
+        int y1 = g_snake[i].y * CELL_SIZE + 1;
+        int x2 = (g_snake[i].x + 1) * CELL_SIZE - 1;
+        int y2 = (g_snake[i].y + 1) * CELL_SIZE - 1;
+
+        if (i == 0) {
+            SelectObject(memDC, headBrush);
+            RoundRect(memDC, x1, y1, x2, y2, 8, 8);
         } else {
-            setColor(COLOR_LIGHTRED);
-            cout << "Loi: Dinh dang khong hop le. Vui long chi nhap so nguyen!\n";
-            setColor(COLOR_WHITE);
-            cin.clear();
-            cin.ignore((numeric_limits<streamsize>::max)(), '\n');
+            SelectObject(memDC, bodyBrush);
+            RoundRect(memDC, x1, y1, x2, y2, 6, 6);
         }
     }
+    DeleteObject(bodyBrush);
+    DeleteObject(headBrush);
+
+    // 7. Vẽ thanh Sidebar thông tin
+    SetBkMode(memDC, TRANSPARENT);
+    SetTextColor(memDC, RGB(230, 237, 243));
+
+    HFONT hFontTitle = CreateFont(20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, 
+                                  OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, 
+                                  DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT hFontNormal = CreateFont(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, 
+                                   OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, 
+                                   DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+
+    HFONT hOldFont = (HFONT)SelectObject(memDC, hFontTitle);
+
+    int sideX = playAreaWidth + 20;
+    TextOut(memDC, sideX, 20, L"SNAKE GAME", 10);
+
+    SelectObject(memDC, hFontNormal);
+    SetTextColor(memDC, RGB(139, 148, 158));
+    TextOut(memDC, sideX, 60, L"Diem so:", 8);
+
+    SetTextColor(memDC, RGB(86, 211, 100));
+    wstring scoreStr = intToWString(g_score);
+    TextOut(memDC, sideX + 80, 60, scoreStr.c_str(), (int)scoreStr.length());
+
+    SetTextColor(memDC, RGB(139, 148, 158));
+    TextOut(memDC, sideX, 90, L"Ky luc:", 7);
+    SetTextColor(memDC, RGB(240, 198, 60));
+    wstring highStr = intToWString(g_highScore);
+    TextOut(memDC, sideX + 80, 90, highStr.c_str(), (int)highStr.length());
+
+    SetTextColor(memDC, RGB(139, 148, 158));
+    TextOut(memDC, sideX, 125, L"Che do tuong:", 13);
+    if (g_passWallMode) {
+        SetTextColor(memDC, RGB(86, 211, 100));
+        TextOut(memDC, sideX, 148, L"[Xuyen tuong]", 13);
+    } else {
+        SetTextColor(memDC, RGB(248, 81, 73));
+        TextOut(memDC, sideX, 148, L"[Dam la thua]", 13);
+    }
+
+    SetTextColor(memDC, RGB(139, 148, 158));
+    TextOut(memDC, sideX, 185, L"Moi dac biet:", 13);
+    if (g_hasSpecialFood) {
+        SetTextColor(memDC, RGB(240, 198, 60));
+        wstring timerStr = L"Co! (" + intToWString(g_specialTimer / 10 + 1) + L"s)";
+        TextOut(memDC, sideX, 208, timerStr.c_str(), (int)timerStr.length());
+    } else {
+        SetTextColor(memDC, RGB(110, 118, 129));
+        TextOut(memDC, sideX, 208, L"Chua co", 7);
+    }
+
+    SetTextColor(memDC, RGB(110, 118, 129));
+    TextOut(memDC, sideX, 260, L"--- DIEU KHIEN ---", 18);
+    TextOut(memDC, sideX, 290, L"W / A / S / D hoac", 18);
+    TextOut(memDC, sideX, 310, L"Phim mui ten", 12);
+    TextOut(memDC, sideX, 340, L"P: Tam dung", 11);
+    TextOut(memDC, sideX, 370, L"ESC: Ve menu", 12);
+
+    // 8. Vẽ lớp phủ Overlay
+    if (g_state == STATE_MENU) {
+        HBRUSH modalBrush = CreateSolidBrush(RGB(13, 17, 23));
+        RECT modalRect = { 80, 80, playAreaWidth - 80, playAreaHeight - 80 };
+        FillRect(memDC, &modalRect, modalBrush);
+        DeleteObject(modalBrush);
+
+        SelectObject(memDC, hFontTitle);
+        SetTextColor(memDC, RGB(86, 211, 100));
+        TextOut(memDC, 180, 120, L"RAN SAN MOI C++", 15);
+
+        SelectObject(memDC, hFontNormal);
+        SetTextColor(memDC, RGB(230, 237, 243));
+        TextOut(memDC, 140, 180, L"Nhan [1] : Choi che do Co dien", 30);
+        TextOut(memDC, 140, 220, L"Nhan [2] : Choi che do Xuyen tuong", 34);
+        SetTextColor(memDC, RGB(139, 148, 158));
+        TextOut(memDC, 140, 270, L"Nhan [ESC]: Thoat game", 22);
+    } else if (g_state == STATE_PAUSED) {
+        HBRUSH modalBrush = CreateSolidBrush(RGB(13, 17, 23));
+        RECT modalRect = { 150, 160, playAreaWidth - 150, playAreaHeight - 160 };
+        FillRect(memDC, &modalRect, modalBrush);
+        DeleteObject(modalBrush);
+
+        SelectObject(memDC, hFontTitle);
+        SetTextColor(memDC, RGB(240, 198, 60));
+        TextOut(memDC, 210, 190, L"TAM DUNG", 8);
+        SelectObject(memDC, hFontNormal);
+        SetTextColor(memDC, RGB(230, 237, 243));
+        TextOut(memDC, 195, 230, L"Nhan [P] de tiep tuc", 20);
+    } else if (g_state == STATE_GAMEOVER) {
+        HBRUSH modalBrush = CreateSolidBrush(RGB(13, 17, 23));
+        RECT modalRect = { 130, 130, playAreaWidth - 130, playAreaHeight - 130 };
+        FillRect(memDC, &modalRect, modalBrush);
+        DeleteObject(modalBrush);
+
+        SelectObject(memDC, hFontTitle);
+        SetTextColor(memDC, RGB(248, 81, 73));
+        TextOut(memDC, 215, 160, L"GAME OVER!", 10);
+
+        SelectObject(memDC, hFontNormal);
+        SetTextColor(memDC, RGB(230, 237, 243));
+        wstring finalScoreStr = L"Diem cua ban: " + intToWString(g_score);
+        TextOut(memDC, 210, 205, finalScoreStr.c_str(), (int)finalScoreStr.length());
+
+        SetTextColor(memDC, RGB(86, 211, 100));
+        TextOut(memDC, 165, 250, L"Nhan [SPACE] de choi lai", 24);
+        SetTextColor(memDC, RGB(139, 148, 158));
+        TextOut(memDC, 175, 280, L"Nhan [ESC] de ve Menu", 21);
+    }
+
+    SelectObject(memDC, hOldFont);
+    DeleteObject(hFontTitle);
+    DeleteObject(hFontNormal);
+
+    BitBlt(hdc, 0, 0, width, height, memDC, 0, 0, SRCCOPY);
+
+    SelectObject(memDC, oldBitmap);
+    DeleteObject(memBitmap);
+    DeleteDC(memDC);
 }
 
 // ==========================================
-// HÀM MAIN: ĐIỀU PHỐI MENU CHÍNH
+// HÀM XỬ LÝ SỰ KIỆN CỬA SỔ (WNDPROC)
 // ==========================================
-int main() {
-    // Khởi tạo seed ngẫu nhiên
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+        case WM_CREATE:
+            loadHighScore();
+            SetTimer(hwnd, TIMER_ID, g_speedMs, NULL);
+            break;
+
+        case WM_TIMER:
+            if (wParam == TIMER_ID) {
+                updateGame(hwnd);
+            }
+            break;
+
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdc = BeginPaint(hwnd, &ps);
+            render(hwnd, hdc);
+            EndPaint(hwnd, &ps);
+            break;
+        }
+
+        case WM_KEYDOWN:
+            if (g_state == STATE_MENU) {
+                if (wParam == '1' || wParam == VK_NUMPAD1) {
+                    initGame(false);
+                    SetTimer(hwnd, TIMER_ID, g_speedMs, NULL);
+                } else if (wParam == '2' || wParam == VK_NUMPAD2) {
+                    initGame(true);
+                    SetTimer(hwnd, TIMER_ID, g_speedMs, NULL);
+                } else if (wParam == VK_ESCAPE) {
+                    PostQuitMessage(0);
+                }
+            } else if (g_state == STATE_PLAYING) {
+                switch (wParam) {
+                    case VK_UP:
+                    case 'W':
+                        if (g_dir != DIR_DOWN) g_nextDir = DIR_UP;
+                        break;
+                    case VK_DOWN:
+                    case 'S':
+                        if (g_dir != DIR_UP) g_nextDir = DIR_DOWN;
+                        break;
+                    case VK_LEFT:
+                    case 'A':
+                        if (g_dir != DIR_RIGHT) g_nextDir = DIR_LEFT;
+                        break;
+                    case VK_RIGHT:
+                    case 'D':
+                        if (g_dir != DIR_LEFT) g_nextDir = DIR_RIGHT;
+                        break;
+                    case 'P':
+                        g_state = STATE_PAUSED;
+                        InvalidateRect(hwnd, NULL, FALSE);
+                        break;
+                    case VK_ESCAPE:
+                        g_state = STATE_MENU;
+                        InvalidateRect(hwnd, NULL, FALSE);
+                        break;
+                }
+            } else if (g_state == STATE_PAUSED) {
+                if (wParam == 'P' || wParam == VK_SPACE) {
+                    g_state = STATE_PLAYING;
+                    InvalidateRect(hwnd, NULL, FALSE);
+                } else if (wParam == VK_ESCAPE) {
+                    g_state = STATE_MENU;
+                    InvalidateRect(hwnd, NULL, FALSE);
+                }
+            } else if (g_state == STATE_GAMEOVER) {
+                if (wParam == VK_SPACE) {
+                    initGame(g_passWallMode);
+                    SetTimer(hwnd, TIMER_ID, g_speedMs, NULL);
+                } else if (wParam == VK_ESCAPE) {
+                    g_state = STATE_MENU;
+                    InvalidateRect(hwnd, NULL, FALSE);
+                }
+            }
+            break;
+
+        case WM_DESTROY:
+            saveHighScore();
+            KillTimer(hwnd, TIMER_ID);
+            PostQuitMessage(0);
+            break;
+
+        default:
+            return DefWindowProc(hwnd, msg, wParam, lParam);
+    }
+    return 0;
+}
+
+// ==========================================
+// HÀM WINMAIN: ĐIỂM BẮT ĐẦU CHƯƠNG TRÌNH GUI
+// ==========================================
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     srand((unsigned int)time(NULL));
 
-    // Đặt tên tiêu đề cửa sổ console
-    SetConsoleTitleA("Game Ran San Moi C++ - Console Edition");
+    const wchar_t CLASS_NAME[] = L"SnakeGameWindowClass";
 
-    bool running = true;
+    WNDCLASS wc = {};
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = hInstance;
+    wc.lpszClassName = CLASS_NAME;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
 
-    while (running) {
-        system("cls");
-        setCursorVisible(true);
-        setColor(COLOR_LIGHTGREEN);
-        cout << "=====================================================\n";
-        cout << "          TRO CHOI RAN SAN MOI (SNAKE GAME)          \n";
-        cout << "=====================================================\n";
-        setColor(COLOR_WHITE);
-        cout << "  1. Choi game - Che do Co dien (Dam tuong la chet)\n";
-        cout << "  2. Choi game - Che do Nang cao (Xuyen tuong)\n";
-        cout << "  3. Bang xep hang ky luc\n";
-        cout << "  4. Huong dan choi\n";
-        cout << "  5. Thoat tro choi\n";
-        setColor(COLOR_LIGHTGREEN);
-        cout << "-----------------------------------------------------\n";
-        setColor(COLOR_WHITE);
+    RegisterClass(&wc);
 
-        int choice = getValidMenuChoice(1, 5);
+    RECT rect = {0, 0, WINDOW_WIDTH, WINDOW_HEIGHT};
+    AdjustWindowRect(&rect, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
 
-        switch (choice) {
-            case 1:
-                playGameSession(false); // Chế độ va tường thua
-                break;
-            case 2:
-                playGameSession(true);  // Chế độ xuyên tường
-                break;
-            case 3:
-                showHighScoresScreen();
-                break;
-            case 4:
-                showInstructionsScreen();
-                break;
-            case 5:
-                running = false;
-                system("cls");
-                setColor(COLOR_LIGHTCYAN);
-                cout << "\nCam on ban da trai nghiem tro choi! Tam biet!\n\n";
-                setColor(COLOR_WHITE);
-                break;
-        }
+    HWND hwnd = CreateWindowEx(
+        0,
+        CLASS_NAME,
+        L"Trò Chơi Rắn Săn Mồi - GUI Edition",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+        CW_USEDEFAULT, CW_USEDEFAULT,
+        rect.right - rect.left,
+        rect.bottom - rect.top,
+        NULL, NULL, hInstance, NULL
+    );
+
+    if (hwnd == NULL) return 0;
+
+    ShowWindow(hwnd, nCmdShow);
+    UpdateWindow(hwnd);
+
+    MSG msg = {};
+    while (GetMessage(&msg, NULL, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
     }
 
     return 0;
