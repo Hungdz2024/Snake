@@ -1,0 +1,106 @@
+================================================================================
+          PHÂN TÍCH TOÀN BỘ THUẬT TOÁN DỰ ÁN RẮN SĂN MỒI (C++ WIN32 GUI)
+================================================================================
+
+1. CẤU TRÚC DỮ LIỆU CHÍNH
+--------------------------------------------------------------------------------
+- Tọa độ (Point):
+  Gồm 2 số nguyên { int x; int y; } đại diện cho vị trí trên hệ lưới ma trận
+  kích thước 25 cột x 20 hàng. Mỗi ô vuông có kích thước 24x24 pixel.
+
+- Thân rắn (g_snake):
+  Dùng std::vector<Point> quản lý danh sách các đốt thân.
+  + Đốt đầu tiên index [0] luôn là Đầu rắn (Head).
+  + Đốt cuối cùng ở cuối mảng là Đuôi rắn (Tail).
+
+- Máy trạng thái (GameState):
+  Quản lý vòng đời trò chơi thông qua Finite State Machine:
+  MENU (Chọn chế độ) -> PLAYING (Đang chơi) <-> PAUSED (Tạm dừng) -> GAMEOVER (Thua).
+
+
+2. CÁC THUẬT TOÁN CỐT LÕI
+--------------------------------------------------------------------------------
+
+2.1. Thuật toán Di chuyển thân rắn (Sliding Window / Deque Logic)
+- Cơ chế hoạt động:
+  + Tính tọa độ ô tiếp theo của đầu rắn dựa vào hướng hiện tại (g_dir):
+    * Lên:    y = y - 1
+    * Xuống:  y = y + 1
+    * Trái:   x = x - 1
+    * Phải:   x = x + 1
+  + Chèn đốt đầu mới vào đầu mảng: g_snake.insert(g_snake.begin(), head_mới)
+  + Kiểm tra ăn mồi:
+    * Nếu ĂN MỒI: Giữ nguyên đuôi -> Rắn dài ra thêm 1 đốt.
+    * Nếu KHÔNG ĂN: Xóa đốt đuôi cũ bằng g_snake.pop_back() -> Rắn trườn về phía trước.
+- Độ phức tạp: O(N) với N là số đốt thân rắn.
+
+
+2.2. Thuật toán Chống quay đầu 180 độ tức thời (Input Buffering)
+- Vấn đề:
+  Nếu đang đi sang Phải mà người chơi bấm nhanh Lên rồi Trái trong cùng 1 nhịp tick,
+  rắn sẽ lập tức quay 180 độ và tự cắn cổ chết ngay.
+- Giải pháp:
+  + Tách thành 2 biến hướng: g_dir (hướng đang chạy) và g_nextDir (hướng vừa bấm).
+  + Khi bắt phím trong WM_KEYDOWN:
+    * Bấm Lên:    Chỉ nhận nếu hướng hiện tại KHÔNG PHẢI Xuống.
+    * Bấm Xuống:  Chỉ nhận nếu hướng hiện tại KHÔNG PHẢI Lên.
+    * Bấm Trái:   Chỉ nhận nếu hướng hiện tại KHÔNG PHẢI Phải.
+    * Bấm Phải:   Chỉ nhận nếu hướng hiện tại KHÔNG PHẢI Trái.
+  + Đến đầu nhịp tick cập nhật khung hình tiếp theo mới thực sự gán: g_dir = g_nextDir.
+- Độ phức tạp: O(1).
+
+
+2.3. Thuật toán Sinh mồi ngẫu nhiên không trùng thân (Rejection Sampling)
+- Cơ chế hoạt động:
+  + Bước 1: Sinh ngẫu nhiên tọa độ bằng hàm rand():
+            food.x = rand() % 25;
+            food.y = rand() % 20;
+  + Bước 2: Quét một vòng lặp kiểm tra tọa độ mồi với tất cả các đốt thân rắn.
+  + Bước 3: Nếu trùng bất kỳ đốt nào -> Quay lại Bước 1 sinh tọa độ khác.
+  + Với mồi đặc biệt: Kiểm tra thêm điều kiện không được trùng với vị trí mồi thường.
+- Độ phức tạp: Trung bình O(N).
+
+
+2.4. Thuật toán Xử lý va chạm (Collision Detection)
+- Va chạm tường biên:
+  + Chế độ Cổ điển:
+    Nếu (x < 0 hoặc x >= 25 hoặc y < 0 hoặc y >= 20) -> Xử lý THUA CUỘC (Game Over).
+  + Chế độ Xuyên tường (Torus Wrap-around):
+    * Nếu x < 0  -> gán x = 24 (Xuất hiện ở mép phải)
+    * Nếu x >= 25 -> gán x = 0  (Xuất hiện ở mép trái)
+    * Nếu y < 0  -> gán y = 19 (Xuất hiện ở mép dưới)
+    * Nếu y >= 20 -> gán y = 0  (Xuất hiện ở mép trên)
+
+- Tự cắn vào thân:
+  + Quét toàn bộ mảng thân rắn từ đốt thứ 1 đến đốt cuối cùng.
+  + Nếu tọa độ đầu trùng với bất kỳ đốt thân nào -> Xử lý THUA CUỘC (Game Over).
+
+
+2.5. Thuật toán Tăng tốc độ theo điểm (Dynamic Difficulty Scaling)
+- Mỗi khi ăn 1 mồi thường:
+  Điểm cộng 10, độ trễ g_speedMs giảm đi 3ms (nhưng không giảm dưới 45ms để tránh quá nhanh).
+- Gọi hàm SetTimer để cập nhật lại nhịp tick của hệ điều hành -> Độ khó tăng dần theo thời gian.
+
+
+2.6. Thuật toán Khử giật màn hình đồ họa (Double Buffering)
+- Vấn đề:
+  Nếu vẽ trực tiếp từng hình chữ nhật, hình tròn lên màn hình sẽ bị chớp nháy rất mỏi mắt.
+- Giải pháp:
+  + Bước 1: Tạo một màn hình ảo trên RAM bằng CreateCompatibleDC và CreateCompatibleBitmap.
+  + Bước 2: Vẽ toàn bộ bàn cờ, thân rắn, mồi, bảng điểm lên trên màn hình ảo này trước.
+  + Bước 3: Copy toàn bộ hình ảnh đã vẽ xong từ RAM ra màn hình thật chỉ bằng 1 lệnh BitBlt duy nhất.
+  -> Hình ảnh mượt mà tuyệt đối, đạt 60 FPS, không bao giờ bị chớp giật.
+
+
+3. BẢNG TỔNG KẾT ĐỘ PHỨC TẠP THUẬT TOÁN
+--------------------------------------------------------------------------------
+Thao tác                        | Thời gian (Time)  | Bộ nhớ (Space)
+--------------------------------|-------------------|---------------------------
+Cập nhật di chuyển rắn          | O(N)              | O(1)
+Kiểm tra tự cắn thân            | O(N)              | O(1)
+Sinh mồi ngẫu nhiên             | O(N)              | O(1)
+Khử giật Double Buffering       | O(Width * Height) | O(Width * Height) trên RAM
+Kiểm tra chống quay đầu 180°    | O(1)              | O(1)
+
+(N: Số đốt của rắn | Width, Height: Độ phân giải pixel của cửa sổ game)
+================================================================================
